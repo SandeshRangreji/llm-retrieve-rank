@@ -61,7 +61,7 @@ class Evaluator:
     def recall_at_k(self,
                     query_id: str,
                     doc_ids: List[str],
-                    k: int = 500) -> float:
+                    k: int = 1000) -> float:
         """
         Calculate Recall@k for a single query.
 
@@ -111,7 +111,7 @@ class Evaluator:
             rel = self.qrels[query_id].get(doc_id, 0)
             # Using the common formula for DCG: rel_i / log_2(i+2)
             # i+2 because i is 0-indexed and we want log_2(rank+1) where rank starts at 1
-            if rel > 0:
+            if rel == 2:
                 dcg += rel / np.log2(i + 2)
 
         return dcg
@@ -330,7 +330,8 @@ def load_qrels(qrels_data) -> Dict[str, Dict[str, int]]:
         doc_id = item["corpus-id"]
         relevance = item["score"]
 
-        qrels[query_id][doc_id] = int(relevance)
+        if relevance == 2:
+            qrels[query_id][doc_id] = int(relevance)
 
     return dict(qrels)
 

@@ -236,7 +236,7 @@ class SearchEngine:
         top_indices = np.argsort(scores)[::-1][:top_k]
 
         # Map indices to document IDs and scores
-        results = [(self.doc_ids[idx], scores[idx]) for idx in top_indices if scores[idx] > 0]
+        results = [(self.doc_ids[idx], scores[idx]) for idx in top_indices]
 
         return results
 
@@ -325,7 +325,7 @@ class SearchEngine:
 
     def search_bm25(self,
                     query: str,
-                    top_k: int = 100) -> List[Tuple[str, float]]:
+                    top_k: int = 1000) -> List[Tuple[str, float]]:
         """
         Search the corpus using BM25.
 
@@ -349,13 +349,13 @@ class SearchEngine:
         top_indices = np.argsort(scores)[::-1][:top_k]
 
         # Map indices to document IDs and scores
-        results = [(self.doc_ids[idx], scores[idx]) for idx in top_indices if scores[idx] > 0]
+        results = [(self.doc_ids[idx], scores[idx]) for idx in top_indices]
 
         return results
 
     def search_tfidf(self,
                      query: str,
-                     top_k: int = 100) -> List[Tuple[str, float]]:
+                     top_k: int = 1000) -> List[Tuple[str, float]]:
         """
         Search the corpus using TF-IDF and cosine similarity.
 
@@ -382,13 +382,13 @@ class SearchEngine:
         top_indices = np.argsort(similarities)[::-1][:top_k]
 
         # Map indices to document IDs and scores
-        results = [(self.doc_ids[idx], similarities[idx]) for idx in top_indices if similarities[idx] > 0]
+        results = [(self.doc_ids[idx], similarities[idx]) for idx in top_indices]
 
         return results
 
     def search_semantic(self,
                         query: str,
-                        top_k: int = 100) -> List[Tuple[str, float]]:
+                        top_k: int = 1000) -> List[Tuple[str, float]]:
         """
         Search the corpus using semantic embeddings and cosine similarity.
 
