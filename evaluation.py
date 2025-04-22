@@ -5,7 +5,6 @@ import logging
 from typing import Dict, List, Tuple, Any, Optional, Union
 from collections import defaultdict
 import matplotlib.pyplot as plt
-from sklearn.metrics import precision_recall_curve
 
 # Configure logging
 logging.basicConfig(
@@ -153,7 +152,7 @@ class Evaluator:
 
     def evaluate_run(self,
                      run_results: Dict[str, List[str]],
-                     metrics: List[str] = ["p@20", "r@500", "ndcg@20"]) -> Dict[str, Dict[str, float]]:
+                     metrics: List[str] = ["p@20", "r@1000", "ndcg@20"]) -> Dict[str, Dict[str, float]]:
         """
         Evaluate a run (multiple queries) using various metrics.
 
@@ -235,7 +234,7 @@ class Evaluator:
     def compare_runs(self,
                      experiment: str,
                      run_names: List[str],
-                     metrics: List[str] = ["p@20", "r@500", "ndcg@20"]) -> Dict[str, Dict[str, Dict[str, float]]]:
+                     metrics: List[str] = ["p@20", "r@1000", "ndcg@20"]) -> Dict[str, Dict[str, Dict[str, float]]]:
         """
         Compare multiple runs.
 
@@ -334,6 +333,38 @@ def load_qrels(qrels_data) -> Dict[str, Dict[str, int]]:
         qrels[query_id][doc_id] = int(relevance)
 
     return dict(qrels)
+
+
+def build_qrels_dicts(qrels_dataset):
+    """
+    Convert qrels_dataset into dictionaries for different relevance levels:
+      - relevant_docs_by_query: judgment score == 1
+      - highly_relevant_docs_by_query: judgment score == 2
+      - overall_relevant_docs_by_query: judgment score > 0
+
+    Args:
+        qrels_dataset: Qrels dataset
+
+    Returns:
+        Tuple of (relevant_docs_by_query, highly_relevant_docs_by_query, overall_relevant_docs_by_query)
+    """
+    relevant_docs_by_query = defaultdict(set)
+    highly_relevant_docs_by_query = defaultdict(set)
+    overall_relevant_docs_by_query = defaultdict(set)
+
+    for item in qrels_dataset:
+        qid = item["query-id"]
+        cid = item["corpus-id"]
+        score = item["score"]
+
+        if score == 1:
+            relevant_docs_by_query[qid].add(cid)
+        if score == 2:
+            highly_relevant_docs_by_query[qid].add(cid)
+        if score > 0:
+            overall_relevant_docs_by_query[qid].add(cid)
+
+    return relevant_docs_by_query, highly_relevant_docs_by_query, overall_relevant_docs_by_query
 
 
 def main():
