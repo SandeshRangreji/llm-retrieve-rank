@@ -2,6 +2,7 @@ import os
 import json
 import logging
 import time
+import re
 from typing import Dict, List, Tuple, Any, Optional, Union
 from collections import defaultdict
 from tqdm import tqdm
@@ -61,36 +62,50 @@ class QueryExpander:
             logger.warning("OPENAI_API_KEY not found in environment variables!")
         self.client = OpenAI(api_key=api_key)
 
-        # Define prompt templates
-        self.zero_shot_prompt = "Expand the following query to improve search relevance: {query}"
-
-        self.few_shot_prompt = """
-        I'll show you examples of query expansion, then I want you to expand a new query.
-
-        Original query: COVID-19 transmission
-        Expanded queries:
-        1. How does COVID-19 spread from person to person
-        2. SARS-CoV-2 transmission methods
-        3. COVID-19 airborne transmission evidence
-
-        Original query: mRNA vaccine technology
-        Expanded queries:
-        1. How do mRNA vaccines like Pfizer and Moderna work
-        2. mRNA vaccine development history and mechanism
-        3. Differences between mRNA vaccines and traditional vaccines
-
-        Now, expand the following query: {query}
-        """
-
-        self.cot_prompt = """
-        First think through adjacent topics. Put together diverse topics to formulate the query in 3 different ways.
+        # Define prompt templates with consistent JSON output format
+        self.zero_shot_prompt = """
+        Expand the following query to improve search relevance. 
+        Generate 5 alternative queries and assign a relevance weight from 1-10 for each.
+        Return results as JSON: [{{"query": "...", "weight": 9}}, ...].
 
         Query: {query}
         """
 
-        self.weighted_prompt = """
-        Expand the following query with 5 alternatives and assign a relevance score from 1-10 for each.
+        self.few_shot_prompt = """
+        I'll show you examples of query expansion with weights, then I want you to expand a new query.
+
+        Original query: COVID-19 transmission
+        Expanded queries with weights (1-10):
+        [
+          {{"query": "How does COVID-19 spread from person to person", "weight": 9}},
+          {{"query": "SARS-CoV-2 transmission methods", "weight": 8}},
+          {{"query": "COVID-19 airborne transmission evidence", "weight": 10}},
+          {{"query": "Coronavirus droplet transmission research", "weight": 7}},
+          {{"query": "COVID-19 surface transmission studies", "weight": 6}}
+        ]
+
+        Original query: mRNA vaccine technology
+        Expanded queries with weights (1-10):
+        [
+          {{"query": "How do mRNA vaccines like Pfizer and Moderna work", "weight": 10}},
+          {{"query": "mRNA vaccine development history and mechanism", "weight": 9}},
+          {{"query": "Differences between mRNA vaccines and traditional vaccines", "weight": 8}},
+          {{"query": "mRNA vaccine technology breakthrough explained", "weight": 7}},
+          {{"query": "mRNA lipid nanoparticle delivery system", "weight": 6}}
+        ]
+
+        Now, expand the following query with 5 alternatives and assign a relevance weight from 1-10 for each.
         Return results as JSON: [{{"query": "...", "weight": 9}}, ...].
+
+        Query: {query}
+        """
+
+        self.cot_prompt = """
+        First think through adjacent topics related to this query. Put together diverse topics that would help retrieve relevant information.
+        Then, formulate 5 different query alternatives that approach the topic from different angles.
+        For each alternative query, assign a relevance weight from 1-10 based on how relevant and useful you think it would be.
+
+        Return your final result as JSON: [{{"query": "...", "weight": 9}}, ...].
 
         Query: {query}
         """
@@ -117,7 +132,59 @@ class QueryExpander:
             logger.error(f"Error calling OpenAI API: {e}")
             return ""
 
-    def expand_query_zero_shot(self, query: str, force_expand: bool = False) -> List[str]:
+    def _parse_response_to_weighted_queries(self, response: str) -> List[Tuple[str, float]]:
+        """
+        Parse the response from OpenAI API to extract weighted queries.
+
+        Args:
+            response: Response from the OpenAI API
+
+        Returns:
+            List of (expanded_query, weight) tuples
+        """
+        try:
+            # Find the JSON part within the response
+            json_start = response.find('[')
+            json_end = response.rfind(']') + 1
+
+            if json_start != -1 and json_end != -1:
+                json_str = response[json_start:json_end]
+                expanded_queries = json.loads(json_str)
+
+                # Convert to list of tuples
+                result = [(item["query"], item["weight"]) for item in expanded_queries]
+            else:
+                # Fallback: parse manually
+                logger.warning(f"Could not find JSON in response, trying manual parsing")
+                lines = response.split('\n')
+                result = []
+
+                for line in lines:
+                    if ':' in line and ('weight' in line.lower() or 'relevance' in line.lower()):
+                        parts = line.split(':', 1)
+                        if len(parts) == 2:
+                            try:
+                                query_text = parts[0].strip().strip('"\'').strip()
+                                weight_text = parts[1].strip()
+                                # Extract number from weight text
+                                weight_match = re.search(r'\d+', weight_text)
+                                if weight_match:
+                                    weight = float(weight_match.group())
+                                    result.append((query_text, weight))
+                            except Exception:
+                                pass
+
+                if not result:
+                    logger.warning(f"Failed to parse expanded queries with weights. Using original query.")
+                    result = [("original query", 10.0)]
+        except Exception as e:
+            logger.error(f"Error parsing weighted expanded queries: {e}")
+            logger.error(f"Response: {response}")
+            result = [("original query", 10.0)]  # Fallback to original query
+
+        return result
+
+    def expand_query_zero_shot(self, query: str, force_expand: bool = False) -> List[Tuple[str, float]]:
         """
         Expand a query using the zero-shot prompting strategy.
 
@@ -126,7 +193,7 @@ class QueryExpander:
             force_expand: Whether to force expansion (ignore cache)
 
         Returns:
-            List of expanded queries
+            List of (expanded_query, weight) tuples
         """
         cache_file = os.path.join(self.expanded_queries_dir, f"zero_shot_{query.replace(' ', '_')}.json")
 
@@ -141,8 +208,8 @@ class QueryExpander:
         prompt = self.zero_shot_prompt.format(query=query)
         response = self._call_openai(prompt)
 
-        # Parse response (simply split by newlines and clean up)
-        expanded_queries = [line.strip() for line in response.split('\n') if line.strip()]
+        # Parse response to get weighted queries
+        expanded_queries = self._parse_response_to_weighted_queries(response)
 
         # Cache results
         with open(cache_file, 'w') as f:
@@ -150,7 +217,7 @@ class QueryExpander:
 
         return expanded_queries
 
-    def expand_query_few_shot(self, query: str, force_expand: bool = False) -> List[str]:
+    def expand_query_few_shot(self, query: str, force_expand: bool = False) -> List[Tuple[str, float]]:
         """
         Expand a query using the few-shot prompting strategy.
 
@@ -159,7 +226,7 @@ class QueryExpander:
             force_expand: Whether to force expansion (ignore cache)
 
         Returns:
-            List of expanded queries
+            List of (expanded_query, weight) tuples
         """
         cache_file = os.path.join(self.expanded_queries_dir, f"few_shot_{query.replace(' ', '_')}.json")
 
@@ -174,9 +241,8 @@ class QueryExpander:
         prompt = self.few_shot_prompt.format(query=query)
         response = self._call_openai(prompt)
 
-        # Parse response (simply split by newlines and clean up)
-        expanded_queries = [line.strip() for line in response.split('\n') if
-                            line.strip() and not line.strip().isdigit() and not line.strip().startswith('-')]
+        # Parse response to get weighted queries
+        expanded_queries = self._parse_response_to_weighted_queries(response)
 
         # Cache results
         with open(cache_file, 'w') as f:
@@ -184,7 +250,7 @@ class QueryExpander:
 
         return expanded_queries
 
-    def expand_query_cot(self, query: str, force_expand: bool = False) -> List[str]:
+    def expand_query_cot(self, query: str, force_expand: bool = False) -> List[Tuple[str, float]]:
         """
         Expand a query using the chain-of-thought prompting strategy.
 
@@ -193,7 +259,7 @@ class QueryExpander:
             force_expand: Whether to force expansion (ignore cache)
 
         Returns:
-            List of expanded queries
+            List of (expanded_query, weight) tuples
         """
         cache_file = os.path.join(self.expanded_queries_dir, f"cot_{query.replace(' ', '_')}.json")
 
@@ -208,95 +274,14 @@ class QueryExpander:
         prompt = self.cot_prompt.format(query=query)
         response = self._call_openai(prompt)
 
-        # Try to extract only the expanded queries (look for numbered lists or clear query statements)
-        lines = response.split('\n')
-        expanded_queries = []
-
-        for line in lines:
-            line = line.strip()
-            # Skip empty lines and lines that look like reasoning
-            if (line and not line.startswith("Let's") and not line.startswith("I'll") and
-                    not line.startswith("First") and not line.startswith("Now") and
-                    not "think" in line.lower()):
-                # Remove numbering if present
-                if line[0].isdigit() and '. ' in line:
-                    line = line.split('. ', 1)[1]
-                expanded_queries.append(line)
+        # Parse response to get weighted queries
+        expanded_queries = self._parse_response_to_weighted_queries(response)
 
         # Cache results
         with open(cache_file, 'w') as f:
             json.dump(expanded_queries, f)
 
         return expanded_queries
-
-    def expand_query_weighted(self, query: str, force_expand: bool = False) -> List[Tuple[str, float]]:
-        """
-        Expand a query and assign weights to each expanded query.
-
-        Args:
-            query: Original query
-            force_expand: Whether to force expansion (ignore cache)
-
-        Returns:
-            List of (expanded_query, weight) tuples
-        """
-        cache_file = os.path.join(self.expanded_queries_dir, f"weighted_{query.replace(' ', '_')}.json")
-
-        # Check cache
-        if os.path.exists(cache_file) and not force_expand:
-            logger.info(f"Loading weighted expanded queries from cache for '{query}'")
-            with open(cache_file, 'r') as f:
-                return json.load(f)
-
-        # Expand query
-        logger.info(f"Expanding query with weights: '{query}'")
-        prompt = self.weighted_prompt.format(query=query)
-        response = self._call_openai(prompt)
-
-        # Try to parse JSON response
-        try:
-            # Sometimes the model might add text before or after the JSON
-            # Find the JSON part within the response
-            json_start = response.find('[')
-            json_end = response.rfind(']') + 1
-
-            if json_start != -1 and json_end != -1:
-                json_str = response[json_start:json_end]
-                expanded_queries = json.loads(json_str)
-
-                # Convert to list of tuples
-                result = [(item["query"], item["weight"]) for item in expanded_queries]
-            else:
-                # Fallback: parse manually
-                logger.warning(f"Could not find JSON in response: {response}")
-                lines = response.split('\n')
-                result = []
-
-                for line in lines:
-                    if ':' in line:
-                        query_part = line.split(':', 1)[1].strip()
-                        if '(' in query_part and ')' in query_part:
-                            query_text = query_part.split('(', 1)[0].strip()
-                            weight_text = query_part.split('(', 1)[1].split(')', 1)[0]
-                            try:
-                                weight = float(weight_text)
-                                result.append((query_text, weight))
-                            except ValueError:
-                                pass
-
-                if not result:
-                    logger.warning(f"Failed to parse expanded queries with weights. Using original query.")
-                    result = [(query, 10.0)]
-        except Exception as e:
-            logger.error(f"Error parsing weighted expanded queries: {e}")
-            logger.error(f"Response: {response}")
-            result = [(query, 10.0)]  # Fallback to original query
-
-        # Cache results
-        with open(cache_file, 'w') as f:
-            json.dump(result, f)
-
-        return result
 
     def perform_hybrid_retrieval(self,
                                  search_engine: SearchEngine,
@@ -391,9 +376,9 @@ def main():
     start_time = time.time()
 
     # Configuration options
-    force_expand = False  # Whether to force query expansion (ignore cache)
-    force_retrieve = False  # Whether to force retrieval (ignore cache)
-    use_subset = True  # Whether to use a subset of queries
+    force_expand = True  # Whether to force query expansion (ignore cache)
+    force_retrieve = True  # Whether to force retrieval (ignore cache)
+    use_subset = False  # Whether to use a subset of queries
     max_queries = 5  # Maximum number of queries to process if use_subset is True
 
     # Initialize query expander
@@ -447,8 +432,7 @@ def main():
         "original": {},  # No expansion
         "zero_shot": {},
         "few_shot": {},
-        "cot": {},
-        "weighted": {}
+        "cot": {}
     }
 
     # Define metrics for evaluation
@@ -480,7 +464,7 @@ def main():
         )
         methods["original"][query_id] = [doc_id for doc_id, _ in baseline_results]
 
-        # Zero-shot expansion
+        # Zero-shot expansion with weights
         expanded_queries = query_expander.expand_query_zero_shot(
             query_text,
             force_expand=force_expand
@@ -490,12 +474,12 @@ def main():
             query_text,
             expanded_queries,
             top_k=1000,
-            is_weighted=False,
+            is_weighted=True,  # Use weighted retrieval
             force_retrieve=force_retrieve
         )
         methods["zero_shot"][query_id] = [doc_id for doc_id, _ in zero_shot_results]
 
-        # Few-shot expansion
+        # Few-shot expansion with weights
         expanded_queries = query_expander.expand_query_few_shot(
             query_text,
             force_expand=force_expand
@@ -505,12 +489,12 @@ def main():
             query_text,
             expanded_queries,
             top_k=1000,
-            is_weighted=False,
+            is_weighted=True,  # Use weighted retrieval
             force_retrieve=force_retrieve
         )
         methods["few_shot"][query_id] = [doc_id for doc_id, _ in few_shot_results]
 
-        # Chain-of-thought expansion
+        # Chain-of-thought expansion with weights
         expanded_queries = query_expander.expand_query_cot(
             query_text,
             force_expand=force_expand
@@ -520,25 +504,12 @@ def main():
             query_text,
             expanded_queries,
             top_k=1000,
-            is_weighted=False,
+            is_weighted=True,  # Use weighted retrieval
             force_retrieve=force_retrieve
         )
         methods["cot"][query_id] = [doc_id for doc_id, _ in cot_results]
 
-        # Weighted expansion
-        expanded_queries = query_expander.expand_query_weighted(
-            query_text,
-            force_expand=force_expand
-        )
-        weighted_results = query_expander.perform_hybrid_retrieval(
-            search_engine,
-            query_text,
-            expanded_queries,
-            top_k=1000,
-            is_weighted=True,
-            force_retrieve=force_retrieve
-        )
-        methods["weighted"][query_id] = [doc_id for doc_id, _ in weighted_results]
+    # Rest of the function remains the same...
 
     # Evaluate and store results for each method
     logger.info("Evaluating results")
