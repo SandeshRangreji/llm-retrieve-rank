@@ -7,3 +7,6 @@ tqdm==4.67.1
 rank-bm25==0.2.2
 sentence-transformers==4.1.0
 nltk==3.9.1
+openai==1.*
+python-dotenv==1.1.0
+
