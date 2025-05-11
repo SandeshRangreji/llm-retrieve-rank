@@ -376,8 +376,8 @@ def main():
     start_time = time.time()
 
     # Configuration options
-    force_expand = True  # Whether to force query expansion (ignore cache)
-    force_retrieve = True  # Whether to force retrieval (ignore cache)
+    force_expand = False  # Whether to force query expansion (ignore cache)
+    force_retrieve = False  # Whether to force retrieval (ignore cache)
     use_subset = False  # Whether to use a subset of queries
     max_queries = 5  # Maximum number of queries to process if use_subset is True
 
