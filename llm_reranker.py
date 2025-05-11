@@ -333,7 +333,7 @@ def main():
     start_time = time.time()
 
     # Configuration options
-    force_rerank = True  # Whether to force reranking (ignore cache)
+    force_rerank = False  # Whether to force reranking (ignore cache)
     use_subset = False  # Whether to use a subset of queries
     max_queries = 5  # Maximum number of queries to process if use_subset is True
     top_k_retrieve = 20  # Number of documents to retrieve for reranking
